@@ -64,10 +64,10 @@ AWS_ACCESS_KEY        = get_secret("AWS_ACCESS_KEY")
 AWS_SECRET_KEY        = get_secret("AWS_SECRET_KEY")
 AWS_SESSION_TOKEN     = get_secret("AWS_SESSION_TOKEN")  # optional (for temporary creds)
 AWS_REGION            = get_secret("AWS_REGION", "ap-south-1")
-AWS_BUCKET            = get_secret("AWS_BUCKET", "suvichaarapp")  # default to suvichaarapp
-S3_PREFIX             = get_secret("S3_PREFIX", "media")          # used for images/audio
+AWS_BUCKET            = get_secret("AWS_BUCKET", "suvichaarapp")
+S3_PREFIX             = get_secret("S3_PREFIX", "media")  # used for images/audio
 
-# ---- Hard-lock HTML/JSON at bucket ROOT + root CDN base (no /webstory-html) ----
+# ---- Hard-lock HTML/JSON at bucket ROOT + root CDN base ----
 HTML_S3_PREFIX = ""  # bucket root
 CDN_HTML_BASE  = get_secret("CDN_HTML_BASE", "https://cdn.suvichaar.org/")
 
@@ -115,7 +115,7 @@ def get_s3_client():
 
 def s3_put_text_file(bucket: str, key: str, body: bytes, content_type: str, cache_control: str = "public, max-age=31536000, immutable"):
     """Upload a small text file and verify it exists by HEADing it back.
-    Returns a dict: {"ok": bool, "etag": str|None, "key": str, "len": int, "error": str|None}
+    Returns: {"ok": bool, "etag": str|None, "key": str, "len": int, "error": str|None}
     """
     s3 = get_s3_client()
     put_args = {
@@ -125,7 +125,6 @@ def s3_put_text_file(bucket: str, key: str, body: bytes, content_type: str, cach
         "ContentType": content_type,
         "CacheControl": cache_control,
     }
-
     try:
         s3.put_object(**put_args)
     except Exception as e:
@@ -315,13 +314,9 @@ def ocr_many(files) -> str:
             st.warning(f"OCR failed for {f.name}: {e}")
     return "\n\n".join(chunks).strip()
 
-# -------- NEW: Enrich alt prompts for better image generation --------
+# -------- Enrich alt prompts for better image generation --------
 def enrich_alt_prompts_with_model(result_json: dict, language: str) -> dict:
-    """
-    Turn s1..s6 'alt1' prompts into rich, safe, image-gen prompts using Azure Chat.
-    Returns a *new* dict with the same keys but improved alt prompts.
-    """
-    # If Azure config is missing, just return input unchanged
+    """Improves s1..s6 'alt1' prompts using Azure Chat."""
     if not (AZURE_API_KEY and AZURE_ENDPOINT and AZURE_DEPLOYMENT and AZURE_API_VERSION):
         return dict(result_json)
 
@@ -346,7 +341,6 @@ def enrich_alt_prompts_with_model(result_json: dict, language: str) -> dict:
     for i in range(1, 7):
         base_alt = (result_json.get(f"s{i}alt1") or "").strip()
         slide_txt = (result_json.get(f"s{i}paragraph1") or "").strip()
-        # If both are empty, skip
         if not (base_alt or slide_txt):
             continue
 
@@ -373,11 +367,10 @@ def enrich_alt_prompts_with_model(result_json: dict, language: str) -> dict:
                 data = robust_parse_model_json(content)
                 if isinstance(data, dict) and data.get("alt"):
                     improved[f"s{i}alt1"] = data["alt"]
-                    continue  # next slide
+                    continue
         except Exception:
-            pass  # fall through to keep original
+            pass
 
-        # Fallback: if enrichment fails, ensure at least safe guardrails on original
         improved[f"s{i}alt1"] = (
             (base_alt or slide_txt) +
             " — flat vector illustration, clean geometric shapes, smooth gradients, harmonious palette, "
@@ -423,7 +416,6 @@ def sanitize_prompt(chat_url: str, headers: dict, original_prompt: str) -> str:
     except Exception as e:
         st.info(f"Sanitizer call failed; using local guards: {e}")
 
-    # Toughened local fallback
     return (
         original_prompt +
         " — flat vector illustration, clean geometric shapes, smooth gradients, harmonious palette, "
@@ -458,7 +450,6 @@ def generate_and_upload_images(result_json: dict, *, vary_images: bool = True) -
         chat_url = f"{AZURE_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_DEPLOYMENT}/chat/completions?api-version={AZURE_API_VERSION}"
         safe_prompt = sanitize_prompt(chat_url, chat_headers, raw_prompt)
 
-        # 🔀 ensure different images across runs even for same inputs
         if vary_images:
             safe_prompt = (
                 f"{safe_prompt}\n\n"
@@ -492,15 +483,13 @@ def generate_and_upload_images(result_json: dict, *, vary_images: bool = True) -
         if image_url:
             try:
                 img_data = requests.get(image_url, timeout=120).content
-                buffer = BytesIO(img_data)  # upload original; no local resize
+                buffer = BytesIO(img_data)
                 key = f"{S3_PREFIX.rstrip('/')}/{slug}/slide{i}.jpg"
                 extra_args = {"ContentType": "image/jpeg"}
-                # No ACL
                 s3.upload_fileobj(buffer, AWS_BUCKET, key, ExtraArgs=extra_args)
                 if i == 1:
                     first_slide_key = key
 
-                # build CDN resized URL (720x1200)
                 final_url = build_resized_cdn_url(AWS_BUCKET, key, 720, 1200)
                 out[f"s{i}image1"] = final_url
             except Exception as e:
@@ -526,10 +515,6 @@ def generate_and_upload_images(result_json: dict, *, vary_images: bool = True) -
             out["potraightcoverurl"] = DEFAULT_ERROR_IMAGE
     except Exception as e:
         st.info(f"Portrait cover URL build failed: {e}")
-        out["portraitcoverurl"] = DEFAULT_ERROR_IMAGE
-        out["potraitcoverurl"] = DEFAULT_ERROR_IMAGE
-        out["potraightcoverurl"] = DEFAULT_ERROR_IMAGE
-
     return out
 
 
@@ -604,10 +589,7 @@ def pick_voice_for_language(lang_code: str, default_voice: str) -> str:
 
 
 def _voice_to_lang_tag(voice_name: str) -> str:
-    """
-    Infer SSML lang tag from Azure voice name.
-    Examples: "hi-IN-AaravNeural" -> "hi-IN"; "en-IN-NeerjaNeural" -> "en-IN"
-    """
+    """Infer SSML lang tag from Azure voice name."""
     try:
         parts = voice_name.split("-")
         return "-".join(parts[0:2]) if len(parts) >= 2 else "en-US"
@@ -615,16 +597,72 @@ def _voice_to_lang_tag(voice_name: str) -> str:
         return "en-US"
 
 
-def build_ssml(text: str, lang_tag: str, voice: str, rate_pct: int, pitch_semi: int, add_break_ms: int) -> str:
+# ---------------- ENHANCED SSML BUILDER (natural speech) ----------------
+def build_ssml_enhanced(
+    text: str,
+    lang_tag: str,
+    voice: str,
+    *,
+    rate_pct: int = 100,
+    pitch_semi: int = 0,
+    sentence_pause_ms: int = 140,
+    comma_pause_ms: int = 90,
+    style: str = "general",          # e.g., "general", "chat", "narration-relaxed", "customerservice", "newscast", "cheerful", "empathetic"
+    style_degree: float = 1.2,       # 0.01–2.0; Azure ignores if unsupported
+    add_trailing_break_ms: int = 150
+) -> str:
+    """
+    Build natural SSML for Azure Speech:
+      - Namespaces, express-as style, sentence & comma pauses
+      - <p>/<s> rhythm, light number & ordinal handling
+    """
+    # Escape XML
+    def esc(s):
+        return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    # Normalize whitespace & split to sentences
+    raw = re.sub(r"\s+", " ", (text or "").strip())
+    if not raw:
+        raw = " "
+
+    # Simple sentence split (keeps punctuation)
+    chunks = re.split(r"(?<=[\.!?])\s+", raw)
+
+    # Insert pauses & number formatting
+    def postprocess_sentence(s: str) -> str:
+        s = esc(s)
+        s = s.replace(",", f",<break time=\"{comma_pause_ms}ms\"/>")  # pauses after commas
+        s = re.sub(r"\b(\d+)(st|nd|rd|th)\b", r'<say-as interpret-as="ordinal">\1</say-as>', s)   # 21st → ordinal
+        s = re.sub(r"\b(\d{3,})\b", r'<say-as interpret-as="cardinal">\1</say-as>', s)           # 2024 → cardinal
+        return s
+
+    ssml_sentences = []
+    for sent in chunks:
+        if not sent:
+            continue
+        ssml_sentences.append(
+            f'<s>{postprocess_sentence(sent)}</s><break time="{sentence_pause_ms}ms"/>'
+        )
+
     prosody = f'rate="{rate_pct}%" pitch="{pitch_semi}st"'
-    br = f'<break time="{add_break_ms}ms"/>' if add_break_ms > 0 else ""
-    # Escape basic XML entities
-    def esc(s): return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return f"""<speak version="1.0" xml:lang="{lang_tag}">
+
+    ssml = f'''<speak version="1.0"
+    xmlns="http://www.w3.org/2001/10/synthesis"
+    xmlns:mstts="https://www.w3.org/2001/mstts"
+    xml:lang="{lang_tag}">
   <voice name="{voice}">
-    <prosody {prosody}>{esc(text)}{br}</prosody>
+    <mstts:silence type="Sentenceboundary" value="{sentence_pause_ms}ms"/>
+    <mstts:express-as style="{style}" styledegree="{style_degree}">
+      <prosody {prosody}>
+        <p>
+          {''.join(ssml_sentences)}
+        </p>
+        {"<break time=\"%dms\"/>" % add_trailing_break_ms if add_trailing_break_ms > 0 else ""}
+      </prosody>
+    </mstts:express-as>
   </voice>
-</speak>"""
+</speak>'''
+    return ssml
 
 
 def fill_template_strict(template: str, data: dict):
@@ -637,12 +675,9 @@ def fill_template_strict(template: str, data: dict):
 
 # ---- helpers for root uploads/URLs (hard-locked) ----
 def _s3_key(name: str) -> str:
-    """Always just filename (bucket root)."""
     return name  # HTML S3 uploads at root
 
-
 def _cdn_url(name: str) -> str:
-    """CDN base + filename at root."""
     return f"{CDN_HTML_BASE.rstrip('/')}/{name}"
 
 # ---------- Template validator & publisher integration ----------
@@ -652,7 +687,7 @@ RECOMMENDED_KEYS = [
     *[f"s{i}image1" for i in range(1,7)],
     *[f"s{i}ssml" for i in range(1,7)],
     *[f"s{i}audio_url" for i in range(1,7)],
-    *[f"s{i}audio1" for i in range(1,7)],  # add common template alias
+    *[f"s{i}audio1" for i in range(1,7)],
     "metadescription", "metakeywords", "publishedtime", "modifiedtime",
     "portraitcoverurl", "potraitcoverurl"
 ]
@@ -774,6 +809,17 @@ with st.expander("🗣️ SSML & TTS", expanded=True):
     ssml_pitch = vcols[2].slider("SSML pitch (semitones)", -6, 6, 0)
     ssml_break = vcols[3].slider("Trailing pause (ms)", 0, 600, 150)
 
+    # Naturalness controls
+    style = st.selectbox(
+        "Speaking style",
+        ["general", "chat", "narration-relaxed", "customerservice", "newscast", "cheerful", "empathetic"],
+        index=0,
+        help="Voices ignore styles they don’t support, falling back to 'general'."
+    )
+    style_degree = st.slider("Style strength", 0.8, 2.0, 1.2, 0.1)
+    sentence_pause_ms = st.slider("Pause between sentences (ms)", 60, 400, 140, 10)
+    comma_pause_ms = st.slider("Pause after commas (ms)", 30, 250, 90, 10)
+
 # G) Template & Publisher
 with st.expander("🧩 Template Fixing & Publisher Integration", expanded=True):
     validate_now = st.button("🔎 Validate uploaded templates")
@@ -834,7 +880,6 @@ if run:
             source_chunks.append(f"[[CONSTRAINTS]]\n{constraints.strip()}")
 
     if files:
-        # Show previews
         with st.expander("📎 Uploaded files"):
             for i, f in enumerate(files, start=1):
                 if f.type.startswith("image/"):
@@ -846,7 +891,6 @@ if run:
                 else:
                     st.write(f"📄 {f.name} (PDF)")
 
-        # OCR pass
         with st.spinner("Reading text from all files with Azure Document Intelligence (prebuilt-read)…"):
             raw_text_ocr = ocr_many(files)
             if raw_text_ocr:
@@ -871,7 +915,7 @@ if run:
         target_lang = detect_hi_or_en(raw_text)
     st.info(f"Target language: **{target_lang}**")
 
-    # -------- Summarize with GPT into JSON (s1..s6 + s1alt..s6alt) --------
+    # -------- Summarize with GPT into JSON --------
     quality_addendum = f"""
 Teaching context & quality controls:
 - Subject: {subject}; Grade: {grade}; Subtopic: {subtopic or "N/A"}; Depth: {depth_level}/5
@@ -897,12 +941,12 @@ INPUT:
 - You will receive either a topic and optional notes, and/or raw OCR text from files.
 
 MANDATORY:
-- Target language = "<<LANG>>" (use concise BCP-47 like "en" or "hi").
+- Target language = "<<LANG>>".
 - Produce ALL text fields strictly in the Target language.
 
 Your job:
-1) Extract a short and catchy title → storytitle (Target language).
-2) Summarise the content into 6 slides (s1paragraph1..s6paragraph1), each within the specified character limit (Target language).
+1) Extract a short and catchy title → storytitle.
+2) Summarise the content into 6 slides (s1paragraph1..s6paragraph1), each within the specified character limit.
 3) For each paragraph (including slide 1), write a DALL·E prompt (s1alt1..s6alt1) for a 1024x1024 flat vector illustration: bright colors, clean lines, no text/captions/logos.
 
 Curiosity Mode behavior:
@@ -915,18 +959,13 @@ Curiosity Mode behavior:
 
 Optional Extras (ONLY include when explicitly requested by the caller):
 - glossary: array of up to 6 items, each as { "term": "...", "meaning": "..." }.
-- faqs: array of up to 4 items, each as { "q": "...", "a": "..." } (Q&A).
+- faqs: array of up to 4 items, each as { "q": "...", "a": "..." }.
 - examples: array of up to 3 one-liners illustrating real use or mini-cases.
 
-SAFETY & POSITIVITY RULES (MANDATORY):
-- If the source includes hate, harassment, violence, adult content, self-harm, illegal acts, or extremist symbols, DO NOT reproduce them.
-- Reinterpret into a positive, inclusive, family-friendly, educational scene (unity, learning, empathy, community, peace).
-- Replace any hateful/violent symbol with abstract shapes, nature, or neutral motifs.
-- Never include real people’s likeness or sensitive groups in a negative way.
-- Avoid slogans, gestures, flags, trademarks, or captions. Absolutely NO TEXT in the image.
+SAFETY & POSITIVITY RULES:
+- If input includes unsafe themes, reinterpret to safe, inclusive, family-friendly content; no slogans/flags/logos; no real-person likeness; no text in images.
 
-Respond strictly in this JSON format (keys in English; values in Target language).
-The extras are OPTIONAL and must be omitted unless requested.
+Respond strictly in this JSON format (keys in English; values in Target language). Omit extras keys if not requested:
 
 {
   "language": "<<LANG>>",
@@ -975,7 +1014,6 @@ Caller directives:
 
         result = robust_parse_model_json(content)
         if not isinstance(result, dict):
-            # One-shot repair
             chat_headers = {"Content-Type": "application/json", "api-key": AZURE_API_KEY}
             chat_url = f"{AZURE_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_DEPLOYMENT}/chat/completions?api-version={AZURE_API_VERSION}"
             fixed = repair_json_with_model(content, chat_url, chat_headers)
@@ -1004,7 +1042,7 @@ Caller directives:
             st.markdown("### 📚 Curiosity Extras")
             st.json(extras_view, expanded=False)
 
-    # -------- Enrich alt prompts (art-director pass) --------
+    # -------- Enrich alt prompts --------
     with st.spinner("Enhancing image prompts (art-director pass)…"):
         result = enrich_alt_prompts_with_model(result, detected_lang)
         if show_enriched_alts:
@@ -1014,13 +1052,12 @@ Caller directives:
     with st.spinner("Generating DALL·E images and uploading to S3…"):
         final_json = generate_and_upload_images(result, vary_images=vary_images)
 
-    # -------- SEO metadata (optional) --------
+    # -------- SEO metadata --------
     chat_headers = {"Content-Type": "application/json", "api-key": AZURE_API_KEY}
     chat_url = f"{AZURE_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_DEPLOYMENT}/chat/completions?api-version={AZURE_API_VERSION}"
     if include_seo:
         with st.spinner("Generating SEO metadata…"):
             meta_desc, meta_keywords = generate_seo_metadata(chat_url, chat_headers, final_json, detected_lang)
-            # Lightly enrich description with a glossary snippet if present (Curiosity Extras)
             if curiosity_on and add_extras and isinstance(result.get("glossary"), list) and result["glossary"]:
                 g0 = result["glossary"][0]
                 if isinstance(g0, dict) and g0.get("term") and g0.get("meaning"):
@@ -1032,14 +1069,42 @@ Caller directives:
     if add_ssml:
         chosen_voice = voice_override.strip() or pick_voice_for_language(detected_lang, VOICE_NAME_DEFAULT)
         lang_tag = _voice_to_lang_tag(chosen_voice)
+        # Optional locale tweaks
+        if detected_lang.startswith("hi") and ssml_rate > 105:
+            ssml_rate = 100
+        elif detected_lang.startswith("en") and ssml_rate < 95:
+            ssml_rate = 98
+
         st.info(f"SSML voice: **{chosen_voice}**  | lang tag: **{lang_tag}**")
 
         intro_text = final_json.get("storytitle") or final_json.get("s1paragraph1") or ""
-        final_json["s1ssml"] = build_ssml(intro_text, lang_tag, chosen_voice, ssml_rate, ssml_pitch, ssml_break)
+        final_json["s1ssml"] = build_ssml_enhanced(
+            intro_text,
+            lang_tag,
+            chosen_voice,
+            rate_pct=ssml_rate,
+            pitch_semi=ssml_pitch,
+            sentence_pause_ms=sentence_pause_ms,
+            comma_pause_ms=comma_pause_ms,
+            style=style,
+            style_degree=style_degree,
+            add_trailing_break_ms=ssml_break,
+        )
 
         for i in range(2, 7):
             text = final_json.get(f"s{i}paragraph1") or ""
-            final_json[f"s{i}ssml"] = build_ssml(text, lang_tag, chosen_voice, ssml_rate, ssml_pitch, ssml_break)
+            final_json[f"s{i}ssml"] = build_ssml_enhanced(
+                text,
+                lang_tag,
+                chosen_voice,
+                rate_pct=ssml_rate,
+                pitch_semi=ssml_pitch,
+                sentence_pause_ms=sentence_pause_ms,
+                comma_pause_ms=comma_pause_ms,
+                style=style,
+                style_degree=style_degree,
+                add_trailing_break_ms=ssml_break,
+            )
     else:
         for i in range(1, 7):
             final_json.setdefault(f"s{i}ssml", "")
@@ -1210,7 +1275,7 @@ Caller directives:
 
         st.success("✅ Templates filled.")
 
-        # Local download buttons
+        # Local downloads
         st.download_button(
             "⬇️ Download Final JSON",
             data=json_str.encode("utf-8"),
@@ -1314,6 +1379,7 @@ Caller directives:
                     '''
                     st_html(iframe, height=820, scrolling=False)
 
+        # (optional) raw HTML preview
         show_preview = st.checkbox("Show raw HTML code of first filled template", value=False)
         if show_preview and filled_items:
             st.code(filled_items[0][1][:5000], language="html")
