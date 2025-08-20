@@ -1156,7 +1156,7 @@ Caller directives:
                     continue
 
                 # Optional publisher injection needs canonical per-file
-                out_filename = f"{base_name}_{ts}.html" if len(html_files) == 1 else f"{base_name}_{ts}_{idx}.html"}
+                out_filename = f"{base_name}_{ts}.html" if len(html_files) == 1 else f"{base_name}_{ts}_{idx}.html"
                 canonical_url = f"{canonical_base.rstrip('/')}/{out_filename}"
 
                 # Template fixing check (placeholders that aren't in data)
