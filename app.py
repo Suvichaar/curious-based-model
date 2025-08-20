@@ -33,8 +33,8 @@ st.set_page_config(
     page_icon="🧠",
     layout="centered"
 )
-st.title("🧠 Suvichaar Builder : Our Curiousity Model")
-st.caption("OCR (Doc Intelligence) → GPT JSON → DALL·E → S3/CDN → (optional) SEO/TTS/SSML → Fill HTML templates → Upload & Verify")
+st.title("🧠 Suvichaar Builder : Our Curiosity Model")
+st.caption("Enter a topic (or upload notes) → GPT JSON → DALL·E → S3/CDN → (optional) SEO/TTS/SSML → Fill HTML templates → Upload & Verify")
 
 # ---------------------------
 # Secrets / Config
@@ -513,7 +513,7 @@ def generate_and_upload_images(result_json: dict, *, vary_images: bool = True) -
 
     progress.empty()
 
-    # portrait cover from slide 1 via CDN (640x853) — keep both spellings for template compatibility
+    # portrait cover from slide 1 via CDN (640x853)
     try:
         if first_slide_key:
             cover = build_resized_cdn_url(AWS_BUCKET, first_slide_key, 640, 853)
@@ -680,7 +680,6 @@ def inject_publisher_meta(html: str, *, site_name: str, canonical_url: str, publ
         "mainEntityOfPage": canonical_url,
         "url": canonical_url
     }
-    # prune None
     def prune(d):
         if isinstance(d, dict):
             return {k: prune(v) for k, v in d.items() if v is not None}
@@ -699,18 +698,33 @@ def inject_publisher_meta(html: str, *, site_name: str, canonical_url: str, publ
 # ---------------------------
 # UI
 # ---------------------------
+
+# A) INPUT SOURCES
+st.markdown("### 📥 Input")
+topic_text = st.text_area(
+    "Enter a topic / paste notes (optional)",
+    placeholder="e.g., Photosynthesis basics for Class 10, with real-world examples in agriculture",
+    height=100
+)
 files = st.file_uploader(
-    "Upload notes/quiz files (images or PDFs) — multiple allowed",
+    "Upload notes/quiz files (images or PDFs) — optional (you can use either topic OR files, or both)",
     type=["jpg", "jpeg", "png", "webp", "tiff", "pdf"],
     accept_multiple_files=True
 )
 html_files = st.file_uploader(
-    "Upload one or more HTML templates (with {{placeholders}})",
+    "Upload one or more HTML templates (with {{placeholders}}) — required",
     type=["html", "htm"],
     accept_multiple_files=True
 )
 
-# ---------- Content Quality & Subject Depth ----------
+# B) LANGUAGE
+lang_override = st.selectbox(
+    "Target language (leave 'Auto-detect' to infer from input)",
+    ["Auto-detect", "English (en)", "Hindi (hi)"],
+    index=0
+)
+
+# C) Content Quality & Depth
 with st.expander("🎛️ Content Quality & Subject Depth", expanded=True):
     cols = st.columns(4)
     subject = cols[0].selectbox("Subject", ["General", "Physics", "Chemistry", "Biology", "Mathematics", "History", "Geography", "Civics", "Computer Science", "Economics", "English", "Hindi"], index=0)
@@ -722,7 +736,7 @@ with st.expander("🎛️ Content Quality & Subject Depth", expanded=True):
     bloom = cols2[1].selectbox("Bloom emphasis", ["Remember", "Understand", "Apply", "Analyze"], index=1)
     tone = cols2[2].selectbox("Tone", ["Neutral", "Conversational", "Exam-focused", "Teacherly"], index=1)
 
-# ---------- Curiosity Model (deep dive) ----------
+# D) Curiosity Model
 with st.expander("🧠 Curiosity Model (optional deep dive)", expanded=False):
     curiosity_on = st.toggle("Enable Curiosity Mode", value=False,
                              help="When ON, the model produces deeper content and optional extras.")
@@ -738,7 +752,18 @@ with st.expander("🧠 Curiosity Model (optional deep dive)", expanded=False):
         height=80
     )
 
-# ---------- SSML / TTS (no narration placeholders) ----------
+# E) Learning goals & notes
+with st.expander("🎯 Learning goals & additional context (optional)", expanded=False):
+    learning_objectives = st.text_area(
+        "Learning objectives (comma-separated or short paragraphs)",
+        placeholder="Define the concept, explain process, relate to daily life, avoid misconceptions."
+    )
+    constraints = st.text_input(
+        "Constraints (optional, comma-separated)",
+        placeholder="Avoid equations, keep analogies simple, use metric units."
+    )
+
+# F) SSML / TTS
 with st.expander("🗣️ SSML & TTS", expanded=True):
     add_ssml = st.toggle("Generate SSML (intro + each slide)", value=True)
     include_tts = st.toggle("Synthesize audio with Azure Speech (MP3) & upload to S3", value=True,
@@ -749,7 +774,7 @@ with st.expander("🗣️ SSML & TTS", expanded=True):
     ssml_pitch = vcols[2].slider("SSML pitch (semitones)", -6, 6, 0)
     ssml_break = vcols[3].slider("Trailing pause (ms)", 0, 600, 150)
 
-# ---------- Template & Publisher ----------
+# G) Template & Publisher
 with st.expander("🧩 Template Fixing & Publisher Integration", expanded=True):
     validate_now = st.button("🔎 Validate uploaded templates")
     inject_publisher = st.toggle("Inject Publisher metadata (canonical + JSON-LD)", value=True)
@@ -792,38 +817,59 @@ run = st.button("🚀 Run")
 
 if run:
     # Basic validation
-    if not files:
-        st.error("Please upload at least one notes/quiz file (image or PDF).")
-        st.stop()
     if not html_files:
         st.error("Please upload at least one HTML template.")
         st.stop()
+    if (not files) and (not topic_text.strip()):
+        st.error("Provide either a topic/pasted notes OR upload files (images/PDFs).")
+        st.stop()
 
-    # Preview thumbnails / list PDFs
-    with st.expander("📎 Uploaded files"):
-        for i, f in enumerate(files, start=1):
-            if f.type.startswith("image/"):
-                try:
-                    img = Image.open(BytesIO(f.getvalue())).convert("RGB")
-                    st.image(img, caption=f"File {i}: {f.name}", use_container_width=True)
-                except Exception:
-                    st.write(f"🖼️ {f.name} (image)")
+    # --- Build source text from topic and/or OCR files ---
+    source_chunks = []
+    if topic_text.strip():
+        source_chunks.append(f"[[TOPIC INPUT]]\n{topic_text.strip()}")
+        if learning_objectives.strip():
+            source_chunks.append(f"[[LEARNING OBJECTIVES]]\n{learning_objectives.strip()}")
+        if constraints.strip():
+            source_chunks.append(f"[[CONSTRAINTS]]\n{constraints.strip()}")
+
+    if files:
+        # Show previews
+        with st.expander("📎 Uploaded files"):
+            for i, f in enumerate(files, start=1):
+                if f.type.startswith("image/"):
+                    try:
+                        img = Image.open(BytesIO(f.getvalue())).convert("RGB")
+                        st.image(img, caption=f"File {i}: {f.name}", use_container_width=True)
+                    except Exception:
+                        st.write(f"🖼️ {f.name} (image)")
+                else:
+                    st.write(f"📄 {f.name} (PDF)")
+
+        # OCR pass
+        with st.spinner("Reading text from all files with Azure Document Intelligence (prebuilt-read)…"):
+            raw_text_ocr = ocr_many(files)
+            if raw_text_ocr:
+                source_chunks.append(raw_text_ocr)
             else:
-                st.write(f"📄 {f.name} (PDF)")
+                st.warning("OCR returned no text from the uploaded files.")
 
-    # -------- OCR with Azure Document Intelligence (multi-file) --------
-    with st.spinner("Reading text from all files with Azure Document Intelligence (prebuilt-read)…"):
-        raw_text = ocr_many(files)
-        if not raw_text:
-            st.error("OCR returned no text from any file.")
-            st.stop()
+    raw_text = "\n\n".join(source_chunks).strip()
+    if not raw_text:
+        st.error("No usable input. Please enter a topic/paste notes or upload files.")
+        st.stop()
 
-    with st.expander("🔎 OCR extracted text"):
-        st.write(raw_text[:20000] if raw_text else "(empty)")
+    with st.expander("🔎 Combined source (topic + OCR)"):
+        st.write(raw_text[:20000])
 
-    # -------- Language auto-detect (hi/en) --------
-    target_lang = detect_hi_or_en(raw_text)
-    st.info(f"Target language (auto): **{target_lang}**")
+    # Language selection
+    if lang_override == "English (en)":
+        target_lang = "en"
+    elif lang_override == "Hindi (hi)":
+        target_lang = "hi"
+    else:
+        target_lang = detect_hi_or_en(raw_text)
+    st.info(f"Target language: **{target_lang}**")
 
     # -------- Summarize with GPT into JSON (s1..s6 + s1alt..s6alt) --------
     quality_addendum = f"""
@@ -848,7 +894,7 @@ Requirements:
 You are a multilingual teaching assistant.
 
 INPUT:
-- You will receive raw OCR text from notes/quiz files (could be multiple pages/files).
+- You will receive either a topic and optional notes, and/or raw OCR text from files.
 
 MANDATORY:
 - Target language = "<<LANG>>" (use concise BCP-47 like "en" or "hi").
@@ -903,7 +949,6 @@ The extras are OPTIONAL and must be omitted unless requested.
 }
 """.replace("<<LANG>>", target_lang).strip()
 
-    # Tell the model whether to include extras & how detailed to be
     extras_flag = "INCLUDE" if (curiosity_on and add_extras) else "OMIT"
     system_prompt += f"""
 
@@ -919,10 +964,10 @@ Caller directives:
 
     messages = [
         {"role": "system", "content": system_prompt + "\n\n" + quality_addendum},
-        {"role": "user", "content": f"OCR TEXT (multi-file):\n{raw_text}\n\nReturn only the JSON object described above."}
+        {"role": "user", "content": f"SOURCE INPUT (topic/notes and/or OCR):\n{raw_text}\n\nReturn only the JSON object described above."}
     ]
 
-    with st.spinner("Summarizing OCR text with Azure OpenAI…"):
+    with st.spinner("Summarizing input with Azure OpenAI…"):
         ok, content = call_azure_chat(messages, temperature=(0.3 if vary_images else 0.0), max_tokens=2200, force_json=True)
         if not ok:
             st.error(content)
@@ -941,15 +986,15 @@ Caller directives:
             st.error("Model did not return a valid JSON object.\n\nRaw reply (truncated):\n" + content[:800])
             st.stop()
 
-    # Enforce target language in parsed result
+    # Enforce target language
     result["language"] = target_lang
     detected_lang = target_lang
     st.info(f"Detected/target language: **{detected_lang}**")
 
-    # Keep OCR text too (handy for debugging or templates)
+    # Keep source text too (handy for debugging or templates)
     result["ocr_text"] = raw_text
 
-    st.success("Structured JSON created from OCR.")
+    st.success("Structured JSON created from input.")
     st.json({k: result[k] for k in result if k in ["storytitle","s1paragraph1","s2paragraph1","s3paragraph1","s4paragraph1","s5paragraph1","s6paragraph1"]}, expanded=False)
 
     # OPTIONAL: show extras if Curiosity Mode requested them
@@ -983,22 +1028,19 @@ Caller directives:
             final_json["metadescription"] = meta_desc
             final_json["metakeywords"] = meta_keywords
 
-    # -------- SSML build (intro + slides) — from title/paragraphs only --------
+    # -------- SSML build (intro + slides) --------
     if add_ssml:
         chosen_voice = voice_override.strip() or pick_voice_for_language(detected_lang, VOICE_NAME_DEFAULT)
         lang_tag = _voice_to_lang_tag(chosen_voice)
         st.info(f"SSML voice: **{chosen_voice}**  | lang tag: **{lang_tag}**")
 
-        # s1: use title as intro
         intro_text = final_json.get("storytitle") or final_json.get("s1paragraph1") or ""
         final_json["s1ssml"] = build_ssml(intro_text, lang_tag, chosen_voice, ssml_rate, ssml_pitch, ssml_break)
 
-        # s2..s6: slide paragraphs
         for i in range(2, 7):
             text = final_json.get(f"s{i}paragraph1") or ""
             final_json[f"s{i}ssml"] = build_ssml(text, lang_tag, chosen_voice, ssml_rate, ssml_pitch, ssml_break)
     else:
-        # make sure ssml keys exist even if not requested
         for i in range(1, 7):
             final_json.setdefault(f"s{i}ssml", "")
 
@@ -1016,7 +1058,6 @@ Caller directives:
             st.stop()
 
         s3 = get_s3_client()
-
         chosen_voice = voice_override.strip() or pick_voice_for_language(detected_lang, VOICE_NAME_DEFAULT)
         st.info(f"TTS voice: **{chosen_voice}**")
 
@@ -1035,13 +1076,12 @@ Caller directives:
             try:
                 audio_config = speechsdk.audio.AudioOutputConfig(filename=temp_path)
                 synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
-                # Prefer SSML if provided
                 if ssml_text:
                     result_tts = synthesizer.speak_ssml_async(ssml_text).get()
                 else:
                     result_tts = synthesizer.speak_text_async(fallback_text or "").get()
 
-                from azure.cognitiveservices.speech import ResultReason, CancellationReason
+                from azure.cognitiveservices.speech import ResultReason
                 if result_tts.reason == ResultReason.SynthesizingAudioCompleted:
                     s3_key = f"{S3_PREFIX.rstrip('/')}/audio/{fname}"
                     extra_args = {"ContentType": "audio/mpeg"}
@@ -1049,14 +1089,7 @@ Caller directives:
                     url = f"{CDN_BASE.rstrip('/')}/{s3_key}"
                     return True, url
 
-                # If canceled or failed, log details and try fallback if we tried SSML first
-                if result_tts.reason == ResultReason.Canceled:
-                    cd = result_tts.cancellation_details
-                    st.error(f"TTS canceled ({out_basename}): reason={cd.reason}; error='{cd.error_details}'")
-                else:
-                    st.error(f"TTS failed ({out_basename}): reason={result_tts.reason}")
-
-                # Fallback path: if we attempted SSML, try plain text
+                # fallback to plain text if SSML failed and we have text
                 if ssml_text and fallback_text:
                     result2 = synthesizer.speak_text_async(fallback_text).get()
                     if result2.reason == ResultReason.SynthesizingAudioCompleted:
@@ -1065,13 +1098,6 @@ Caller directives:
                         s3.upload_file(temp_path, AWS_BUCKET, s3_key, ExtraArgs=extra_args)
                         url = f"{CDN_BASE.rstrip('/')}/{s3_key}"
                         return True, url
-                    else:
-                        if result2.reason == ResultReason.Canceled:
-                            cd2 = result2.cancellation_details
-                            st.error(f"Text fallback canceled ({out_basename}): reason={cd2.reason}; error='{cd2.error_details}'")
-                        else:
-                            st.error(f"Text fallback failed ({out_basename}): reason={result2.reason}")
-
                 return False, "synthesis failed"
 
             except Exception as e:
@@ -1086,12 +1112,10 @@ Caller directives:
         with st.spinner("Synthesizing audio and uploading to S3…"):
             base_slug = re.sub(r"[^a-z0-9\-]+", "-", (final_json.get("storytitle") or "story").lower()).strip("-")[:80] or "story"
 
-            # Ensure placeholders exist regardless of outcome
             for i in range(1, 7):
                 final_json.setdefault(f"s{i}audio_url", "")
                 final_json.setdefault(f"s{i}audio1", "")
 
-            # Intro + slides
             tasks = [("s1ssml", "s1audio_url", final_json.get("storytitle") or final_json.get("s1paragraph1") or "", f"{base_slug}_s1")]
             for i in range(2, 7):
                 tasks.append((f"s{i}ssml", f"s{i}audio_url", final_json.get(f"s{i}paragraph1") or "", f"{base_slug}_s{i}"))
@@ -1100,7 +1124,7 @@ Caller directives:
                 ok_synth, val = synth_and_upload(final_json.get(ssml_key, ""), fallback_text, out_base)
                 if ok_synth:
                     final_json[audio_key] = val
-                    final_json[audio_key.replace("_url", "1")] = val  # back-compat alias
+                    final_json[audio_key.replace("_url", "1")] = val
                     created_audio[ssml_key] = val
                 else:
                     st.error(f"TTS failed for: {ssml_key} → {val}")
@@ -1118,7 +1142,6 @@ Caller directives:
     merged = dict(final_json)
     merged.update(extra_fields)
 
-    # ALSO pre-seed audio placeholders (prevents template warnings even if TTS off/fails)
     for i in range(1, 7):
         merged.setdefault(f"s{i}audio_url", "")
         merged.setdefault(f"s{i}audio1", "")
@@ -1155,7 +1178,6 @@ Caller directives:
                     st.error(f"Could not read {f.name} as UTF-8.")
                     continue
 
-                # Optional publisher injection needs canonical per-file
                 out_filename = f"{base_name}_{ts}.html" if len(html_files) == 1 else f"{base_name}_{ts}_{idx}.html"
                 canonical_url = f"{canonical_base.rstrip('/')}/{out_filename}"
 
@@ -1246,7 +1268,7 @@ Caller directives:
                 content_type="text/html; charset=utf-8"
             )
             if res_html["ok"]:
-                html_cdn_url = _cdn_url(name)  # https://cdn.suvichaar.org/<file>.html
+                html_cdn_url = _cdn_url(name)
                 uploaded_urls.append(("HTML", html_cdn_url))
             verifications.append({"file": name, **res_html})
 
@@ -1262,13 +1284,12 @@ Caller directives:
             st.error("Some uploads failed or could not be verified. Check the errors above — common issues: wrong bucket name, IAM permissions (s3:PutObject and s3:HeadObject), or Public Access Block.")
 
         # ---------------------------
-        # FINAL: Live HTML Preview (at the very end)
+        # FINAL: Live HTML Preview
         # ---------------------------
         st.markdown("### 👀 Live HTML Preview")
         if not filled_items:
             st.info("No filled templates available to preview.")
         else:
-            # Collect uploaded HTML URLs (if any)
             uploaded_html_urls = [u for (k, u) in uploaded_urls if k == "HTML"]
 
             preview_source = st.radio(
@@ -1279,24 +1300,20 @@ Caller directives:
             )
 
             if preview_source == "Local filled HTML":
-                # Show a select for local HTMLs
                 names = [name for name, _ in filled_items]
                 choice = st.selectbox("Select local HTML to preview", names, index=0)
                 chosen_html = next(html for (name, html) in filled_items if name == choice)
-                # Render the HTML directly
                 st_html(chosen_html, height=800, scrolling=True)
             else:
                 if not uploaded_html_urls:
                     st.info("No uploaded HTML URLs found yet. Upload step might have failed.")
                 else:
                     cdn_choice = st.selectbox("Select uploaded CDN URL to preview", uploaded_html_urls, index=0)
-                    # Use an iframe to display remote page
                     iframe = f'''
                         <iframe src="{cdn_choice}" width="1600" height="800" style="border:0;"></iframe>
                     '''
                     st_html(iframe, height=820, scrolling=False)
 
-        # (optional) keep your minimal code preview toggle
         show_preview = st.checkbox("Show raw HTML code of first filled template", value=False)
         if show_preview and filled_items:
             st.code(filled_items[0][1][:5000], language="html")
