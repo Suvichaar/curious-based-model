@@ -33,7 +33,7 @@ st.set_page_config(
     page_icon="🧠",
     layout="centered"
 )
-st.title("🧠 Suvichaar Builder")
+st.title("🧠 Suvichaar Builder : Our Curiousity Model")
 st.caption("OCR (Doc Intelligence) → GPT JSON → DALL·E → S3/CDN → (optional) SEO/TTS/SSML → Fill HTML templates → Upload & Verify")
 
 # ---------------------------
