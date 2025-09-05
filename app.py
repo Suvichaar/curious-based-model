@@ -226,11 +226,14 @@ def call_azure_chat(messages, *, temperature=0.2, max_tokens=2000, force_json=Tr
     params = {"api-version": AZURE_API_VERSION}
 
     body = {"messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+    raw_model_reply = None
+
     if force_json:
         body["response_format"] = {"type": "json_object"}
 
     try:
         res = requests.post(chat_url, headers=chat_headers, params=params, json=body, timeout=150)
+        raw_model_reply = res.text
     except Exception as e:
         return False, f"Azure request failed: {e}"
 
@@ -242,13 +245,11 @@ def call_azure_chat(messages, *, temperature=0.2, max_tokens=2000, force_json=Tr
         body.pop("response_format", None)
         try:
             res2 = requests.post(chat_url, headers=chat_headers, params=params, json=body, timeout=150)
-            if res2.status_code == 200:
-                return True, res2.json()["choices"][0]["message"]["content"]
-            return False, f"Azure Chat error: {res2.status_code} — {res2.text[:300]}"
+            return (True, res2.json()["choices"][0]["message"]["content"]) if res2.status_code == 200 else (False, f"Azure Chat error: {res2.status_code} — {res2.text[:300]}")
         except Exception as e:
             return False, f"Azure retry failed: {e}"
 
-    return False, f"Azure Chat error: {res.status_code} — {res.text[:300]}"
+    return False, f"Azure Chat error: {res.status_code} — {raw_model_reply[:300]}"
 
 # ---------- Language auto-detect (Hindi vs English) ----------
 def detect_hi_or_en(text: str) -> str:
@@ -742,7 +743,7 @@ topic_text = st.text_area(
     height=100
 )
 files = st.file_uploader(
-    "Upload notes/quiz files (images or PDFs) — optional (you can use either topic OR files, or both)",
+    "Upload notes/quiz files (images or PDFs) — optional (use topic OR files, or both)",
     type=["jpg", "jpeg", "png", "webp", "tiff", "pdf"],
     accept_multiple_files=True
 )
@@ -984,7 +985,7 @@ Respond strictly in this JSON format (keys in English; values in Target language
   "s6alt1": "...",
   "glossary": [ { "term": "...", "meaning": "..." } ],
   "faqs":     [ { "q": "...", "a": "..." } ],
-  "examples": [ "..." ]
+  "examples": [ { "text": "..." } ]
 }
 """.replace("<<LANG>>", target_lang).strip()
 
@@ -1012,28 +1013,62 @@ Caller directives:
             st.error(content)
             st.stop()
 
+        raw_model_reply = content  # save
         result = robust_parse_model_json(content)
+        fixed_result = None
+
         if not isinstance(result, dict):
             chat_headers = {"Content-Type": "application/json", "api-key": AZURE_API_KEY}
             chat_url = f"{AZURE_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_DEPLOYMENT}/chat/completions?api-version={AZURE_API_VERSION}"
             fixed = repair_json_with_model(content, chat_url, chat_headers)
             if isinstance(fixed, dict):
+                fixed_result = fixed
                 result = fixed
 
         if not isinstance(result, dict):
             st.error("Model did not return a valid JSON object.\n\nRaw reply (truncated):\n" + content[:800])
             st.stop()
 
-    # Enforce target language
+    # --------- REQUIRED schema + backfills (ensures s1paragraph1 etc.) ----------
+    REQUIRED_PARAS = [f"s{i}paragraph1" for i in range(1, 7)]
+    REQUIRED_ALTS  = [f"s{i}alt1" for i in range(1, 7)]
+    REQUIRED_CORE  = ["storytitle", "language"]
+    REQUIRED_ALL   = REQUIRED_CORE + REQUIRED_PARAS + REQUIRED_ALTS
+
+    for k in REQUIRED_ALL:
+        result.setdefault(k, "")
+
+    if not result["s1paragraph1"].strip():
+        fallback_s1 = (result.get("storytitle") or "").strip()
+        if not fallback_s1:
+            fallback_s1 = (raw_text or "")[:180].strip()
+        result["s1paragraph1"] = fallback_s1 or "Introduction"
+
+    if not result["storytitle"].strip():
+        tt = result["s1paragraph1"][:60].strip(" .,-")
+        result["storytitle"] = tt or "Web Story"
+
+    GENERIC_ALT = ("Flat vector illustration of the slide’s idea; clean geometric shapes, "
+                   "smooth gradients, harmonious palette; inclusive, family-friendly; "
+                   "no text/logos/watermarks; no real-person likeness.")
+    for i in range(1, 7):
+        if not result[f"s{i}alt1"].strip():
+            seed = (result[f"s{i}paragraph1"] or result["storytitle"]).strip()
+            result[f"s{i}alt1"] = f"{seed} — {GENERIC_ALT}"
+
+    # Enforce target language and keep source
     result["language"] = target_lang
     detected_lang = target_lang
-    st.info(f"Detected/target language: **{detected_lang}**")
-
-    # Keep source text too (handy for debugging or templates)
     result["ocr_text"] = raw_text
 
     st.success("Structured JSON created from input.")
-    st.json({k: result[k] for k in result if k in ["storytitle","s1paragraph1","s2paragraph1","s3paragraph1","s4paragraph1","s5paragraph1","s6paragraph1"]}, expanded=False)
+    _preview = {
+        "storytitle": result.get("storytitle"),
+        **{f"s{i}paragraph1": result.get(f"s{i}paragraph1") for i in range(1,7)}
+    }
+    if not _preview["s1paragraph1"] or not _preview["s1paragraph1"].strip():
+        st.error("⚠️ s1paragraph1 is missing/empty after model step (we applied backfill).")
+    st.json(_preview, expanded=False)
 
     # OPTIONAL: show extras if Curiosity Mode requested them
     if curiosity_on and add_extras:
@@ -1273,7 +1308,6 @@ Caller directives:
             for name, missing in per_file_reports:
                 st.write(f"• **{name}** → missing: {', '.join(missing)}")
 
-
         st.success("✅ Templates filled.")
 
         # Local downloads
@@ -1384,3 +1418,28 @@ Caller directives:
         show_preview = st.checkbox("Show raw HTML code of first filled template", value=False)
         if show_preview and filled_items:
             st.code(filled_items[0][1][:5000], language="html")
+
+    # ---------------------------
+    # 🧪 Full Debug Panel (all JSONs at each stage)
+    # ---------------------------
+    with st.expander("🧪 Full Debug (show all JSON objects)"):
+        try:
+            st.markdown("**Raw model reply (truncated)**")
+            st.code(raw_model_reply[:4000] if 'raw_model_reply' in locals() else "(no raw reply available)", language="json")
+        except Exception:
+            st.code("(raw reply unavailable)")
+        st.markdown("**Parsed result (post-schema-guard)**")
+        st.json(result, expanded=False)
+
+        try:
+            if 'fixed_result' in locals() and fixed_result is not None:
+                st.markdown("**Fixed (repair_json_with_model) result**")
+                st.json(fixed_result, expanded=False)
+        except Exception:
+            pass
+
+        st.markdown("**Final JSON used for images (post-enrichment)**")
+        st.json(final_json, expanded=False)
+
+        st.markdown("**Merged JSON used for templating / publishing**")
+        st.json(merged, expanded=False)
