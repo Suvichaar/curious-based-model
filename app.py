@@ -445,7 +445,7 @@ def generate_and_upload_images(result_json: dict, *, vary_images: bool = True) -
     headers_dalle = {"Content-Type": "application/json", "api-key": DAALE_KEY}
     progress = st.progress(0, text="Generating images…")
 
-    for i in range(1, 7):
+    for i in range(0, 7):
         raw_prompt = result_json.get(f"s{i}alt1", "") or ""
         chat_headers = {"Content-Type": "application/json", "api-key": AZURE_API_KEY}
         chat_url = f"{AZURE_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_DEPLOYMENT}/chat/completions?api-version={AZURE_API_VERSION}"
