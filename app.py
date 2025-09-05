@@ -1141,7 +1141,7 @@ Caller directives:
                 add_trailing_break_ms=ssml_break,
             )
     else:
-        for i in range(1, 7):
+        for i in range(0, 7):
             final_json.setdefault(f"s{i}ssml", "")
 
     # -------- Optional: TTS (SSML preferred, with plain-text fallback) --------
