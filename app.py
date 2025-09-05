@@ -1212,7 +1212,7 @@ Caller directives:
         with st.spinner("Synthesizing audio and uploading to S3…"):
             base_slug = re.sub(r"[^a-z0-9\-]+", "-", (final_json.get("storytitle") or "story").lower()).strip("-")[:80] or "story"
 
-            for i in range(1, 7):
+            for i in range(0, 7):
                 final_json.setdefault(f"s{i}audio_url", "")
                 final_json.setdefault(f"s{i}audio1", "")
 
@@ -1242,7 +1242,7 @@ Caller directives:
     merged = dict(final_json)
     merged.update(extra_fields)
 
-    for i in range(1, 7):
+    for i in range(0, 7):
         merged.setdefault(f"s{i}audio_url", "")
         merged.setdefault(f"s{i}audio1", "")
         merged.setdefault(f"s{i}ssml", merged.get(f"s{i}ssml", ""))
