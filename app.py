@@ -685,10 +685,10 @@ def _cdn_url(name: str) -> str:
 RECOMMENDED_KEYS = [
     "storytitle",
     *[f"s{i}paragraph1" for i in range(1,7)],
-    *[f"s{i}image1" for i in range(1,7)],
-    *[f"s{i}ssml" for i in range(1,7)],
-    *[f"s{i}audio_url" for i in range(1,7)],
-    *[f"s{i}audio1" for i in range(1,7)],
+    *[f"s{i}image1" for i in range(0,7)],
+    *[f"s{i}ssml" for i in range(0,7)],
+    *[f"s{i}audio_url" for i in range(0,7)],
+    *[f"s{i}audio1" for i in range(0,7)],
     "metadescription", "metakeywords", "publishedtime", "modifiedtime",
     "portraitcoverurl", "potraitcoverurl"
 ]
