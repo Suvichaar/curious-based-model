@@ -15,14 +15,14 @@ import requests
 import boto3
 from PIL import Image
 import streamlit as st
-from streamlit.components.v1 import html as st_html  # <-- for live HTML preview
+from streamlit.components.v1 import html as st_html  # for live HTML preview
 
 # --- Azure Doc Intelligence SDK ---
 try:
     from azure.ai.documentintelligence import DocumentIntelligenceClient
     from azure.core.credentials import AzureKeyCredential
 except Exception:
-    DocumentIntelligenceClient = None  # we'll error nicely later
+    DocumentIntelligenceClient = None
     AzureKeyCredential = None
 
 # ---------------------------
@@ -48,24 +48,24 @@ def get_secret(key, default=None):
 # Azure OpenAI (GPT)
 AZURE_API_KEY     = get_secret("AZURE_API_KEY")
 AZURE_ENDPOINT    = get_secret("AZURE_ENDPOINT")  # https://<resource>.openai.azure.com
-AZURE_DEPLOYMENT  = get_secret("AZURE_DEPLOYMENT", "gpt-4o")  # your *deployment* name
+AZURE_DEPLOYMENT  = get_secret("AZURE_DEPLOYMENT", "gpt-4o")
 AZURE_API_VERSION = get_secret("AZURE_API_VERSION", "2024-08-01-preview")
 
 # Azure Document Intelligence (OCR)
-AZURE_DI_ENDPOINT = get_secret("AZURE_DI_ENDPOINT")  # https://<your-di>.cognitiveservices.azure.com/
+AZURE_DI_ENDPOINT = get_secret("AZURE_DI_ENDPOINT")
 AZURE_DI_KEY      = get_secret("AZURE_DI_KEY")
 
 # Azure DALL·E (Images)
-DALE_ENDPOINT     = get_secret("DALE_ENDPOINT")  # e.g. https://.../openai/deployments/dall-e-3/images/generations?api-version=2024-02-01
+DALE_ENDPOINT     = get_secret("DALE_ENDPOINT")
 DAALE_KEY         = get_secret("DAALE_KEY")
 
 # AWS S3
 AWS_ACCESS_KEY        = get_secret("AWS_ACCESS_KEY")
 AWS_SECRET_KEY        = get_secret("AWS_SECRET_KEY")
-AWS_SESSION_TOKEN     = get_secret("AWS_SESSION_TOKEN")  # optional (for temporary creds)
+AWS_SESSION_TOKEN     = get_secret("AWS_SESSION_TOKEN")
 AWS_REGION            = get_secret("AWS_REGION", "ap-south-1")
 AWS_BUCKET            = get_secret("AWS_BUCKET", "suvichaarapp")
-S3_PREFIX             = get_secret("S3_PREFIX", "media")  # used for images/audio
+S3_PREFIX             = get_secret("S3_PREFIX", "media")
 
 # ---- Hard-lock HTML/JSON at bucket ROOT + root CDN base ----
 HTML_S3_PREFIX = ""  # bucket root
@@ -112,11 +112,8 @@ def get_s3_client():
         kwargs["aws_session_token"] = AWS_SESSION_TOKEN
     return boto3.client("s3", **kwargs)
 
-
 def s3_put_text_file(bucket: str, key: str, body: bytes, content_type: str, cache_control: str = "public, max-age=31536000, immutable"):
-    """Upload a small text file and verify it exists by HEADing it back.
-    Returns: {"ok": bool, "etag": str|None, "key": str, "len": int, "error": str|None}
-    """
+    """Upload a small text file and verify it exists by HEADing it back."""
     s3 = get_s3_client()
     put_args = {
         "Bucket": bucket,
@@ -129,8 +126,6 @@ def s3_put_text_file(bucket: str, key: str, body: bytes, content_type: str, cach
         s3.put_object(**put_args)
     except Exception as e:
         return {"ok": False, "etag": None, "key": key, "len": len(body), "error": f"put_object failed: {e}"}
-
-    # Verify via HEAD
     try:
         head = s3.head_object(Bucket=bucket, Key=key)
         etag = head.get("ETag", "").strip('"')
@@ -173,7 +168,6 @@ def robust_parse_model_json(raw_reply: str):
             except Exception:
                 parsed = None
     return parsed if isinstance(parsed, dict) else None
-
 
 def repair_json_with_model(raw_reply: str, chat_url: str, headers: dict):
     """Ask the model to fix its own output into valid JSON per schema; returns dict or None."""
@@ -218,29 +212,22 @@ Return ONLY valid JSON, no code fences, no commentary.
     except Exception:
         return None
 
-
 def call_azure_chat(messages, *, temperature=0.2, max_tokens=2000, force_json=True):
     """Call Azure Chat (JSON mode default). Returns (ok, content_or_err)."""
     chat_headers = {"Content-Type": "application/json", "api-key": AZURE_API_KEY}
     chat_url = f"{AZURE_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_DEPLOYMENT}/chat/completions"
     params = {"api-version": AZURE_API_VERSION}
-
     body = {"messages": messages, "temperature": temperature, "max_tokens": max_tokens}
     raw_model_reply = None
-
     if force_json:
         body["response_format"] = {"type": "json_object"}
-
     try:
         res = requests.post(chat_url, headers=chat_headers, params=params, json=body, timeout=150)
         raw_model_reply = res.text
     except Exception as e:
         return False, f"Azure request failed: {e}"
-
     if res.status_code == 200:
         return True, res.json()["choices"][0]["message"]["content"]
-
-    # If JSON mode fails, retry without it
     if force_json:
         body.pop("response_format", None)
         try:
@@ -248,7 +235,6 @@ def call_azure_chat(messages, *, temperature=0.2, max_tokens=2000, force_json=Tr
             return (True, res2.json()["choices"][0]["message"]["content"]) if res2.status_code == 200 else (False, f"Azure Chat error: {res2.status_code} — {res2.text[:300]}")
         except Exception as e:
             return False, f"Azure retry failed: {e}"
-
     return False, f"Azure Chat error: {res.status_code} — {raw_model_reply[:300]}"
 
 # ---------- Language auto-detect (Hindi vs English) ----------
@@ -265,15 +251,11 @@ def detect_hi_or_en(text: str) -> str:
 
 # ---------- Azure Document Intelligence (OCR) ----------
 def ocr_read_any(bytes_blob: bytes) -> str:
-    """
-    Uses Azure Document Intelligence 'prebuilt-read' to extract text for images or PDFs.
-    Returns merged text with [[PAGE n]] markers.
-    """
+    """Uses Azure Document Intelligence 'prebuilt-read' to extract text for images or PDFs."""
     if DocumentIntelligenceClient is None or AzureKeyCredential is None:
         return ""
     if not (AZURE_DI_ENDPOINT and AZURE_DI_KEY):
         return ""
-
     try:
         client = DocumentIntelligenceClient(
             endpoint=AZURE_DI_ENDPOINT.rstrip("/"),
@@ -299,10 +281,7 @@ def ocr_read_any(bytes_blob: bytes) -> str:
         return ""
 
 def ocr_many(files) -> str:
-    """
-    Accepts a mixed list of Streamlit UploadedFile (images and/or PDFs).
-    Returns concatenated text with [[FILE i: name]] and [[PAGE n]] markers.
-    """
+    """Accepts a mixed list of Streamlit UploadedFile (images and/or PDFs)."""
     chunks = []
     for i, f in enumerate(files, start=1):
         try:
@@ -423,7 +402,6 @@ def sanitize_prompt(chat_url: str, headers: dict, original_prompt: str) -> str:
         "inclusive and family-friendly; no text, no logos, no watermarks, no real-person likeness."
     )
 
-
 def generate_and_upload_images(result_json: dict, *, vary_images: bool = True) -> dict:
     """Generate DALL·E images, upload originals to S3, return CDN resized URLs in JSON."""
     if not all([DALE_ENDPOINT, DAALE_KEY, AWS_ACCESS_KEY, AWS_SECRET_KEY, AWS_BUCKET]):
@@ -440,13 +418,19 @@ def generate_and_upload_images(result_json: dict, *, vary_images: bool = True) -
         .replace(".", "")
     )
     out = {k: result_json[k] for k in result_json}
-    first_slide_key = None
+    first_slide_key = None  # we set this from slide 0 (cover)
 
     headers_dalle = {"Content-Type": "application/json", "api-key": DAALE_KEY}
     progress = st.progress(0, text="Generating images…")
 
     for i in range(0, 7):
-        raw_prompt = result_json.get(f"s{i}alt1", "") or ""
+        raw_prompt = (result_json.get(f"s{i}alt1") or "").strip()
+        if i == 0 and not raw_prompt:
+            # sensible cover default
+            title = (result_json.get("storytitle") or "Inspiring Learning").strip()
+            raw_prompt = f"Cover for the story titled “{title}”: welcoming, abstract, educational motif — "
+            raw_prompt += "flat vector illustration, clean geometric shapes, smooth gradients, inclusive and family-friendly; no text/logos/watermarks; no real-person likeness."
+
         chat_headers = {"Content-Type": "application/json", "api-key": AZURE_API_KEY}
         chat_url = f"{AZURE_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_DEPLOYMENT}/chat/completions?api-version={AZURE_API_VERSION}"
         safe_prompt = sanitize_prompt(chat_url, chat_headers, raw_prompt)
@@ -488,9 +472,8 @@ def generate_and_upload_images(result_json: dict, *, vary_images: bool = True) -
                 key = f"{S3_PREFIX.rstrip('/')}/{slug}/slide{i}.jpg"
                 extra_args = {"ContentType": "image/jpeg"}
                 s3.upload_fileobj(buffer, AWS_BUCKET, key, ExtraArgs=extra_args)
-                if i == 1:
-                    first_slide_key = key
-
+                if i == 0:
+                    first_slide_key = key  # portrait cover from cover (slide 0)
                 final_url = build_resized_cdn_url(AWS_BUCKET, key, 720, 1200)
                 out[f"s{i}image1"] = final_url
             except Exception as e:
@@ -499,11 +482,11 @@ def generate_and_upload_images(result_json: dict, *, vary_images: bool = True) -
         else:
             out[f"s{i}image1"] = DEFAULT_ERROR_IMAGE
 
-        progress.progress(i/6.0, text=f"Generating images… ({i}/6)")
+        progress.progress((i+1)/7.0, text=f"Generating images… ({i+1}/7)")
 
     progress.empty()
 
-    # portrait cover from slide 1 via CDN (640x853)
+    # portrait cover from slide 0 via CDN (640x853)
     try:
         if first_slide_key:
             cover = build_resized_cdn_url(AWS_BUCKET, first_slide_key, 640, 853)
@@ -517,7 +500,6 @@ def generate_and_upload_images(result_json: dict, *, vary_images: bool = True) -
     except Exception as e:
         st.info(f"Portrait cover URL build failed: {e}")
     return out
-
 
 def generate_seo_metadata(chat_url: str, headers: dict, result_json: dict, lang_code: str):
     """Ask the model for SEO metadata in the detected language."""
@@ -560,7 +542,6 @@ Respond strictly in this JSON format:
     except Exception:
         return "Explore this insightful story.", "web story, inspiration"
 
-
 def pick_voice_for_language(lang_code: str, default_voice: str) -> str:
     """Map detected language → Azure voice name."""
     if not lang_code:
@@ -588,7 +569,6 @@ def pick_voice_for_language(lang_code: str, default_voice: str) -> str:
         return "pa-IN-GeetikaNeural"
     return default_voice
 
-
 def _voice_to_lang_tag(voice_name: str) -> str:
     """Infer SSML lang tag from Azure voice name."""
     try:
@@ -596,7 +576,6 @@ def _voice_to_lang_tag(voice_name: str) -> str:
         return "-".join(parts[0:2]) if len(parts) >= 2 else "en-US"
     except Exception:
         return "en-US"
-
 
 # ---------------- ENHANCED SSML BUILDER (natural speech) ----------------
 def build_ssml_enhanced(
@@ -608,33 +587,23 @@ def build_ssml_enhanced(
     pitch_semi: int = 0,
     sentence_pause_ms: int = 140,
     comma_pause_ms: int = 90,
-    style: str = "general",          # e.g., "general", "chat", "narration-relaxed", "customerservice", "newscast", "cheerful", "empathetic"
-    style_degree: float = 1.2,       # 0.01–2.0; Azure ignores if unsupported
+    style: str = "general",
+    style_degree: float = 1.2,
     add_trailing_break_ms: int = 150
 ) -> str:
-    """
-    Build natural SSML for Azure Speech:
-      - Namespaces, express-as style, sentence & comma pauses
-      - <p>/<s> rhythm, light number & ordinal handling
-    """
-    # Escape XML
+    """Natural SSML for Azure Speech."""
     def esc(s):
         return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-    # Normalize whitespace & split to sentences
     raw = re.sub(r"\s+", " ", (text or "").strip())
     if not raw:
         raw = " "
-
-    # Simple sentence split (keeps punctuation)
     chunks = re.split(r"(?<=[\.!?])\s+", raw)
 
-    # Insert pauses & number formatting
     def postprocess_sentence(s: str) -> str:
         s = esc(s)
-        s = s.replace(",", f",<break time=\"{comma_pause_ms}ms\"/>")  # pauses after commas
-        s = re.sub(r"\b(\d+)(st|nd|rd|th)\b", r'<say-as interpret-as="ordinal">\1</say-as>', s)   # 21st → ordinal
-        s = re.sub(r"\b(\d{3,})\b", r'<say-as interpret-as="cardinal">\1</say-as>', s)           # 2024 → cardinal
+        s = s.replace(",", f",<break time=\"{comma_pause_ms}ms\"/>")
+        s = re.sub(r"\b(\d+)(st|nd|rd|th)\b", r'<say-as interpret-as="ordinal">\1</say-as>', s)
+        s = re.sub(r"\b(\d{3,})\b", r'<say-as interpret-as="cardinal">\1</say-as>', s)
         return s
 
     ssml_sentences = []
@@ -644,9 +613,7 @@ def build_ssml_enhanced(
         ssml_sentences.append(
             f'<s>{postprocess_sentence(sent)}</s><break time="{sentence_pause_ms}ms"/>'
         )
-
     prosody = f'rate="{rate_pct}%" pitch="{pitch_semi}st"'
-
     ssml = f'''<speak version="1.0"
     xmlns="http://www.w3.org/2001/10/synthesis"
     xmlns:mstts="https://www.w3.org/2001/mstts"
@@ -664,7 +631,6 @@ def build_ssml_enhanced(
   </voice>
 </speak>'''
     return ssml
-
 
 def fill_template_strict(template: str, data: dict):
     """Replace {{key}} and {{key|safe}} with string(value). Also return placeholders detected (for missing-report)."""
@@ -694,7 +660,6 @@ RECOMMENDED_KEYS = [
 ]
 
 def validate_template_placeholders(html_text: str):
-    """Return (missing_recommended, extras_found, all_placeholders_set)."""
     found = set(re.findall(r"\{\{\s*([a-zA-Z0-9_\-]+)(?:\|safe)?\s*\}\}", html_text))
     missing = [k for k in RECOMMENDED_KEYS if k not in found]
     extras = [p for p in sorted(found) if p not in RECOMMENDED_KEYS]
@@ -734,8 +699,6 @@ def inject_publisher_meta(html: str, *, site_name: str, canonical_url: str, publ
 # ---------------------------
 # UI
 # ---------------------------
-
-# A) INPUT SOURCES
 st.markdown("### 📥 Input")
 topic_text = st.text_area(
     "Enter a topic / paste notes (optional)",
@@ -753,14 +716,12 @@ html_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-# B) LANGUAGE
 lang_override = st.selectbox(
     "Target language (leave 'Auto-detect' to infer from input)",
     ["Auto-detect", "English (en)", "Hindi (hi)"],
     index=0
 )
 
-# C) Content Quality & Depth
 with st.expander("🎛️ Content Quality & Subject Depth", expanded=True):
     cols = st.columns(4)
     subject = cols[0].selectbox("Subject", ["General", "Physics", "Chemistry", "Biology", "Mathematics", "History", "Geography", "Civics", "Computer Science", "Economics", "English", "Hindi"], index=0)
@@ -772,36 +733,21 @@ with st.expander("🎛️ Content Quality & Subject Depth", expanded=True):
     bloom = cols2[1].selectbox("Bloom emphasis", ["Remember", "Understand", "Apply", "Analyze"], index=1)
     tone = cols2[2].selectbox("Tone", ["Neutral", "Conversational", "Exam-focused", "Teacherly"], index=1)
 
-# D) Curiosity Model
 with st.expander("🧠 Curiosity Model (optional deep dive)", expanded=False):
     curiosity_on = st.toggle("Enable Curiosity Mode", value=False,
                              help="When ON, the model produces deeper content and optional extras.")
     cols_c = st.columns(3)
-    curiosity_level = cols_c[0].slider("Curiosity level", 1, 5, 3,
-                                       help="Higher levels ask for more detail, nuance, and context.")
-    max_chars_per_slide = cols_c[1].selectbox("Max chars per slide",
-                                              [300, 400, 500, 600], index=1)
+    curiosity_level = cols_c[0].slider("Curiosity level", 1, 5, 3)
+    max_chars_per_slide = cols_c[1].selectbox("Max chars per slide", [300, 400, 500, 600], index=1)
     add_extras = cols_c[2].toggle("Include Extras (glossary, FAQs, examples)", value=True)
-    curiosity_questions = st.text_area(
-        "Specific questions or angles to emphasize (optional)",
-        placeholder="e.g., Compare with X, real-world uses in healthcare, edge cases, pitfalls…",
-        height=80
-    )
+    curiosity_questions = st.text_area("Specific questions or angles to emphasize (optional)", height=80)
 
-# E) Learning goals & notes
 with st.expander("🎯 Learning goals & additional context (optional)", expanded=False):
-    learning_objectives = st.text_area(
-        "Learning objectives (comma-separated or short paragraphs)",
-        placeholder="Define the concept, explain process, relate to daily life, avoid misconceptions."
-    )
-    constraints = st.text_input(
-        "Constraints (optional, comma-separated)",
-        placeholder="Avoid equations, keep analogies simple, use metric units."
-    )
+    learning_objectives = st.text_area("Learning objectives (comma-separated or short paragraphs)")
+    constraints = st.text_input("Constraints (optional, comma-separated)")
 
-# F) SSML / TTS
 with st.expander("🗣️ SSML & TTS", expanded=True):
-    add_ssml = st.toggle("Generate SSML (intro + each slide)", value=True)
+    add_ssml = st.toggle("Generate SSML (cover + each slide)", value=True)
     include_tts = st.toggle("Synthesize audio with Azure Speech (MP3) & upload to S3", value=True,
                             help="Requires AZURE_SPEECH_KEY and AZURE_SPEECH_REGION.")
     vcols = st.columns(4)
@@ -809,19 +755,11 @@ with st.expander("🗣️ SSML & TTS", expanded=True):
     ssml_rate = vcols[1].slider("SSML rate (%)", 60, 140, 100)
     ssml_pitch = vcols[2].slider("SSML pitch (semitones)", -6, 6, 0)
     ssml_break = vcols[3].slider("Trailing pause (ms)", 0, 600, 150)
-
-    # Naturalness controls
-    style = st.selectbox(
-        "Speaking style",
-        ["general", "chat", "narration-relaxed", "customerservice", "newscast", "cheerful", "empathetic"],
-        index=0,
-        help="Voices ignore styles they don’t support, falling back to 'general'."
-    )
+    style = st.selectbox("Speaking style", ["general", "chat", "narration-relaxed", "customerservice", "newscast", "cheerful", "empathetic"], index=0)
     style_degree = st.slider("Style strength", 0.8, 2.0, 1.2, 0.1)
     sentence_pause_ms = st.slider("Pause between sentences (ms)", 60, 400, 140, 10)
     comma_pause_ms = st.slider("Pause after commas (ms)", 30, 250, 90, 10)
 
-# G) Template & Publisher
 with st.expander("🧩 Template Fixing & Publisher Integration", expanded=True):
     validate_now = st.button("🔎 Validate uploaded templates")
     inject_publisher = st.toggle("Inject Publisher metadata (canonical + JSON-LD)", value=True)
@@ -830,7 +768,6 @@ with st.expander("🧩 Template Fixing & Publisher Integration", expanded=True):
     canonical_base = pcols[1].text_input("Canonical base (no trailing slash)", CDN_HTML_BASE.rstrip("/"))
     publisher_name = pcols[2].text_input("Publisher", "Suvichaar")
     publisher_logo = pcols[3].text_input("Publisher logo URL", "")
-
     author_name = st.text_input("Author (optional)", "Suvichaar Team")
 
     if validate_now and html_files:
@@ -856,7 +793,7 @@ with c1:
 with c2:
     add_time_fields = st.checkbox("Add time fields", value=True, help="Adds {{publishedtime}} and {{modifiedtime}} (UTC ISO).")
 with c3:
-    vary_images = st.checkbox("Always vary images", value=True, help="Adds a random variation code/style so repeated runs produce different images.")
+    vary_images = st.checkbox("Always vary images", value=True)
 with c4:
     show_enriched_alts = st.checkbox("Show enriched alt prompts", value=False)
 
@@ -871,7 +808,7 @@ if run:
         st.error("Provide either a topic/pasted notes OR upload files (images/PDFs).")
         st.stop()
 
-    # --- Build source text from topic and/or OCR files ---
+    # Build source text
     source_chunks = []
     if topic_text.strip():
         source_chunks.append(f"[[TOPIC INPUT]]\n{topic_text.strip()}")
@@ -891,7 +828,6 @@ if run:
                         st.write(f"🖼️ {f.name} (image)")
                 else:
                     st.write(f"📄 {f.name} (PDF)")
-
         with st.spinner("Reading text from all files with Azure Document Intelligence (prebuilt-read)…"):
             raw_text_ocr = ocr_many(files)
             if raw_text_ocr:
@@ -929,10 +865,10 @@ Requirements:
 - Adjust conceptual detail to depth {depth_level}/5 and difficulty '{difficulty}'.
 - Keep each slide ≤ {max_chars_per_slide} characters, concise and unambiguous.
 - If Curiosity mode is ON:
-  * Increase conceptual density proportionally to level ({curiosity_level}/5): more distinctions, brief context, cause/effect, trade-offs.
-  * Prefer short, information-rich sentences over long prose.
-  * Add micro-examples or analogies inline when useful (but keep it tight).
-  * If Extras are requested, also produce compact 'glossary', 'faqs', and 'examples' fields (see schema).
+  * Increase conceptual density proportionally to level ({curiosity_level}/5).
+  * Prefer short, information-rich sentences.
+  * Add micro-examples or analogies inline when useful.
+  * If Extras are requested, also produce compact 'glossary', 'faqs', and 'examples' fields.
 """.strip()
 
     system_prompt = """
@@ -952,16 +888,7 @@ Your job:
 
 Curiosity Mode behavior:
 - When OFF: keep explanations compact and minimal while correct.
-- When ON (level 1-5): increase conceptual depth proportionally:
-  - level 1-2: add one clarifying line or nuance.
-  - level 3-4: add concise distinctions, a quick analogy, and a pitfall or limitation if relevant.
-  - level 5: briefly connect to real-world/application context or underlying principle.
-- Always obey the max characters per slide.
-
-Optional Extras (ONLY include when explicitly requested by the caller):
-- glossary: array of up to 6 items, each as { "term": "...", "meaning": "..." }.
-- faqs: array of up to 4 items, each as { "q": "...", "a": "..." }.
-- examples: array of up to 3 one-liners illustrating real use or mini-cases.
+- When ON (level 1-5): increase conceptual depth proportionally.
 
 SAFETY & POSITIVITY RULES:
 - If input includes unsafe themes, reinterpret to safe, inclusive, family-friendly content; no slogans/flags/logos; no real-person likeness; no text in images.
@@ -996,7 +923,6 @@ Caller directives:
 - Character limit per slide: {max_chars_per_slide}.
 - Curiosity Mode: {"ON" if curiosity_on else "OFF"} (level={curiosity_level}).
 - Extras (glossary/faqs/examples): {extras_flag}.
-- If Extras are to be OMITTED, do not include those keys at all in the JSON.
 """
 
     if vary_images:
@@ -1013,7 +939,7 @@ Caller directives:
             st.error(content)
             st.stop()
 
-        raw_model_reply = content  # save
+        raw_model_reply = content
         result = robust_parse_model_json(content)
         fixed_result = None
 
@@ -1029,7 +955,7 @@ Caller directives:
             st.error("Model did not return a valid JSON object.\n\nRaw reply (truncated):\n" + content[:800])
             st.stop()
 
-    # --------- REQUIRED schema + backfills (ensures s1paragraph1 etc.) ----------
+    # --------- REQUIRED schema + backfills ----------
     REQUIRED_PARAS = [f"s{i}paragraph1" for i in range(1, 7)]
     REQUIRED_ALTS  = [f"s{i}alt1" for i in range(1, 7)]
     REQUIRED_CORE  = ["storytitle", "language"]
@@ -1039,9 +965,7 @@ Caller directives:
         result.setdefault(k, "")
 
     if not result["s1paragraph1"].strip():
-        fallback_s1 = (result.get("storytitle") or "").strip()
-        if not fallback_s1:
-            fallback_s1 = (raw_text or "")[:180].strip()
+        fallback_s1 = (result.get("storytitle") or "").strip() or (raw_text or "")[:180].strip()
         result["s1paragraph1"] = fallback_s1 or "Introduction"
 
     if not result["storytitle"].strip():
@@ -1056,7 +980,12 @@ Caller directives:
             seed = (result[f"s{i}paragraph1"] or result["storytitle"]).strip()
             result[f"s{i}alt1"] = f"{seed} — {GENERIC_ALT}"
 
-    # Enforce target language and keep source
+    # Cover alt for s0image1 (not in schema): derive from title
+    if not result.get("s0alt1", "").strip():
+        title = (result.get("storytitle") or "Inspiring Learning").strip()
+        result["s0alt1"] = f"Cover for the story titled “{title}” — {GENERIC_ALT}"
+
+    # Enforce language + keep source
     result["language"] = target_lang
     detected_lang = target_lang
     result["ocr_text"] = raw_text
@@ -1066,18 +995,15 @@ Caller directives:
         "storytitle": result.get("storytitle"),
         **{f"s{i}paragraph1": result.get(f"s{i}paragraph1") for i in range(1,7)}
     }
-    if not _preview["s1paragraph1"] or not _preview["s1paragraph1"].strip():
-        st.error("⚠️ s1paragraph1 is missing/empty after model step (we applied backfill).")
     st.json(_preview, expanded=False)
 
-    # OPTIONAL: show extras if Curiosity Mode requested them
     if curiosity_on and add_extras:
         extras_view = {k: result.get(k) for k in ("glossary", "faqs", "examples") if result.get(k)}
         if extras_view:
             st.markdown("### 📚 Curiosity Extras")
             st.json(extras_view, expanded=False)
 
-    # -------- Enrich alt prompts --------
+    # -------- Enrich alt prompts (s1..s6 only) --------
     with st.spinner("Enhancing image prompts (art-director pass)…"):
         result = enrich_alt_prompts_with_model(result, detected_lang)
         if show_enriched_alts:
@@ -1100,11 +1026,10 @@ Caller directives:
             final_json["metadescription"] = meta_desc
             final_json["metakeywords"] = meta_keywords
 
-    # -------- SSML build (intro + slides) --------
+    # -------- SSML build (cover + slides) --------
     if add_ssml:
         chosen_voice = voice_override.strip() or pick_voice_for_language(detected_lang, VOICE_NAME_DEFAULT)
         lang_tag = _voice_to_lang_tag(chosen_voice)
-        # Optional locale tweaks
         if detected_lang.startswith("hi") and ssml_rate > 105:
             ssml_rate = 100
         elif detected_lang.startswith("en") and ssml_rate < 95:
@@ -1112,9 +1037,9 @@ Caller directives:
 
         st.info(f"SSML voice: **{chosen_voice}**  | lang tag: **{lang_tag}**")
 
-        intro_text = final_json.get("storytitle") or final_json.get("s1paragraph1") or ""
-        final_json["s1ssml"] = build_ssml_enhanced(
-            intro_text,
+        # s0 = cover: storytitle only
+        final_json["s0ssml"] = build_ssml_enhanced(
+            final_json.get("storytitle", ""),
             lang_tag,
             chosen_voice,
             rate_pct=ssml_rate,
@@ -1126,7 +1051,8 @@ Caller directives:
             add_trailing_break_ms=ssml_break,
         )
 
-        for i in range(2, 7):
+        # s1..s6 = slide texts
+        for i in range(1, 7):
             text = final_json.get(f"s{i}paragraph1") or ""
             final_json[f"s{i}ssml"] = build_ssml_enhanced(
                 text,
@@ -1189,7 +1115,6 @@ Caller directives:
                     url = f"{CDN_BASE.rstrip('/')}/{s3_key}"
                     return True, url
 
-                # fallback to plain text if SSML failed and we have text
                 if ssml_text and fallback_text:
                     result2 = synthesizer.speak_text_async(fallback_text).get()
                     if result2.reason == ResultReason.SynthesizingAudioCompleted:
@@ -1216,15 +1141,17 @@ Caller directives:
                 final_json.setdefault(f"s{i}audio_url", "")
                 final_json.setdefault(f"s{i}audio1", "")
 
-            tasks = [("s1ssml", "s1audio_url", final_json.get("storytitle") or final_json.get("s1paragraph1") or "", f"{base_slug}_s1")]
-            for i in range(2, 7):
+            # Build tasks: cover (s0) + s1..s6
+            tasks = []
+            tasks.append(("s0ssml", "s0audio_url", final_json.get("storytitle") or "", f"{base_slug}_s0"))
+            for i in range(1, 7):
                 tasks.append((f"s{i}ssml", f"s{i}audio_url", final_json.get(f"s{i}paragraph1") or "", f"{base_slug}_s{i}"))
 
             for ssml_key, audio_key, fallback_text, out_base in tasks:
                 ok_synth, val = synth_and_upload(final_json.get(ssml_key, ""), fallback_text, out_base)
                 if ok_synth:
                     final_json[audio_key] = val
-                    final_json[audio_key.replace("_url", "1")] = val
+                    final_json[audio_key.replace("_url", "1")] = val  # alias key expected by some templates
                     created_audio[ssml_key] = val
                 else:
                     st.error(f"TTS failed for: {ssml_key} → {val}")
@@ -1242,10 +1169,14 @@ Caller directives:
     merged = dict(final_json)
     merged.update(extra_fields)
 
+    # ensure defaults and (optional) legacy aliases
     for i in range(0, 7):
         merged.setdefault(f"s{i}audio_url", "")
         merged.setdefault(f"s{i}audio1", "")
         merged.setdefault(f"s{i}ssml", merged.get(f"s{i}ssml", ""))
+        # If your HTML ever used a{i}audio1, uncomment these:
+        # merged[f"a{i}audio_url"] = merged.get(f"s{i}audio_url", "")
+        # merged[f"a{i}audio1"]    = merged.get(f"s{i}audio1", "")
 
     # -------- Fill templates and offer downloads + S3 upload --------
     def slugify_filename(text: str) -> str:
@@ -1258,13 +1189,12 @@ Caller directives:
     base_name = slugify_filename(merged.get("storytitle", "webstory"))
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    filled_items = []  # (filename, filled_html)
+    filled_items = []
 
     if html_files:
         with st.spinner("Filling HTML templates…"):
             per_file_reports = []
 
-            # Prepare JSON download first
             json_name = f"{base_name}_{ts}.json"
             buf = io.StringIO()
             json.dump(merged, buf, ensure_ascii=False, indent=2)
@@ -1281,16 +1211,13 @@ Caller directives:
                 out_filename = f"{base_name}_{ts}.html" if len(html_files) == 1 else f"{base_name}_{ts}_{idx}.html"
                 canonical_url = f"{canonical_base.rstrip('/')}/{out_filename}"
 
-                # Template fixing check (placeholders that aren't in data)
                 _, placeholders = fill_template_strict(html_text, {})  # detect placeholders only
                 missing_in_data = sorted([p for p in placeholders if p not in merged])
                 if missing_in_data:
                     per_file_reports.append((f.name, missing_in_data))
 
-                # Replace placeholders
                 filled, _ = fill_template_strict(html_text, merged)
 
-                # Inject publisher meta (if toggled)
                 if inject_publisher:
                     filled = inject_publisher_meta(
                         filled,
@@ -1344,9 +1271,9 @@ Caller directives:
         uploaded_urls = []
         verifications = []
 
-        # 1) Upload JSON (root)
+        # JSON
         json_filename = f"{base_name}_{ts}.json"
-        json_key = _s3_key(json_filename)  # root
+        json_key = _s3_key(json_filename)
         res_json = s3_put_text_file(
             bucket=AWS_BUCKET,
             key=json_key,
@@ -1358,7 +1285,7 @@ Caller directives:
             uploaded_urls.append(("JSON", json_cdn_url))
         verifications.append({"file": json_filename, **res_json})
 
-        # 2) Upload each HTML file (root) and verify
+        # HTML files
         for name, html in filled_items:
             html_key = _s3_key(name)
             res_html = s3_put_text_file(
@@ -1372,33 +1299,28 @@ Caller directives:
                 uploaded_urls.append(("HTML", html_cdn_url))
             verifications.append({"file": name, **res_html})
 
-        # Show results
         if uploaded_urls:
             for kind, url in uploaded_urls:
                 st.markdown(f"- **{kind}**: {url}")
         st.json({"s3_verification": verifications}, expanded=False)
 
         if uploaded_urls and all(v.get("ok") for v in verifications):
-            st.success("✅ Files uploaded to S3 and verified via HEAD. CDN should serve them at the URLs above (allow a short cache/propagation delay).")
+            st.success("✅ Files uploaded to S3 and verified via HEAD.")
         else:
-            st.error("Some uploads failed or could not be verified. Check the errors above — common issues: wrong bucket name, IAM permissions (s3:PutObject and s3:HeadObject), or Public Access Block.")
+            st.error("Some uploads failed or could not be verified. Check errors above.")
 
-        # ---------------------------
-        # FINAL: Live HTML Preview
-        # ---------------------------
+        # Live preview
         st.markdown("### 👀 Live HTML Preview")
         if not filled_items:
             st.info("No filled templates available to preview.")
         else:
             uploaded_html_urls = [u for (k, u) in uploaded_urls if k == "HTML"]
-
             preview_source = st.radio(
                 "Choose preview source",
                 options=["Local filled HTML", "Uploaded CDN URL"],
                 index=0 if filled_items else 1,
                 horizontal=True
             )
-
             if preview_source == "Local filled HTML":
                 names = [name for name, _ in filled_items]
                 choice = st.selectbox("Select local HTML to preview", names, index=0)
@@ -1406,21 +1328,18 @@ Caller directives:
                 st_html(chosen_html, height=800, scrolling=True)
             else:
                 if not uploaded_html_urls:
-                    st.info("No uploaded HTML URLs found yet. Upload step might have failed.")
+                    st.info("No uploaded HTML URLs found yet.")
                 else:
                     cdn_choice = st.selectbox("Select uploaded CDN URL to preview", uploaded_html_urls, index=0)
-                    iframe = f'''
-                        <iframe src="{cdn_choice}" width="1600" height="800" style="border:0;"></iframe>
-                    '''
+                    iframe = f'<iframe src="{cdn_choice}" width="1600" height="800" style="border:0;"></iframe>'
                     st_html(iframe, height=820, scrolling=False)
 
-        # (optional) raw HTML preview
         show_preview = st.checkbox("Show raw HTML code of first filled template", value=False)
         if show_preview and filled_items:
             st.code(filled_items[0][1][:5000], language="html")
 
     # ---------------------------
-    # 🧪 Full Debug Panel (all JSONs at each stage)
+    # 🧪 Full Debug Panel
     # ---------------------------
     with st.expander("🧪 Full Debug (show all JSON objects)"):
         try:
